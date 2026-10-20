@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phone camera capture</title>
+  <style>
+    body { max-width: 720px; margin: 24px auto; padding: 0 16px; font: 16px/1.5 system-ui, sans-serif; }
+    video, img { display: block; width: 100%; max-height: 60vh; object-fit: contain; background: #111; margin: 12px 0; }
+    button, a { margin-right: 8px; }
+    button { padding: 10px 16px; }
+    [hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Phone camera capture</h1>
+  <p>Start the rear camera, then capture a JPEG frame. Camera access requires a trusted HTTPS connection on your phone.</p>
+  <button id="start" type="button">Start camera</button>
+  <button id="capture" type="button" disabled>Capture frame</button>
+  <button id="stop" type="button" disabled>Stop camera</button>
+  <p id="status" role="status" aria-live="polite">Camera is stopped.</p>
+  <video id="video" autoplay muted playsinline aria-label="Camera preview"></video>
+  <img id="frame" alt="Latest captured camera frame" hidden>
+  <a id="download" download="phone-frame.jpg" hidden>Download JPEG</a>
+  <script type="module">
+    import { PhoneCamera } from "./camera.js";
+
+    const element = id => document.getElementById(id);
+    const camera = new PhoneCamera(element("video"));
+    let frameUrl;
+    function controls() {
+      element("start").disabled = camera.running;
+      element("capture").disabled = !camera.running;
+      element("stop").disabled = !camera.running;
+    }
+    element("start").addEventListener("click", async () => {
+      element("start").disabled = true;
+      element("status").textContent = "Waiting for camera permission…";
+      try {
+        await camera.start();
+        element("status").textContent = "Camera is running. Capture a frame when ready.";
+      } catch (error) {
+        element("status").textContent = error.message;
+      } finally {
+        controls();
+      }
+    });
+    element("capture").addEventListener("click", async () => {
+      element("capture").disabled = true;
+      try {
+        const blob = await camera.capture();
+        if (frameUrl) URL.revokeObjectURL(frameUrl);
+        frameUrl = URL.createObjectURL(blob);
+        element("frame").src = frameUrl;
+        element("frame").hidden = false;
+        element("download").href = frameUrl;
+        element("download").hidden = false;
+        element("status").textContent = `Captured ${blob.type}, ${blob.size} bytes.`;
+      } catch (error) {
+        element("status").textContent = error.message;
+      } finally {
+        controls();
+      }
+    });
+    element("stop").addEventListener("click", () => {
+      camera.stop();
+      controls();
+      element("status").textContent = "Camera is stopped.";
+    });
+    addEventListener("pagehide", () => {
+      camera.stop();
+      if (frameUrl) URL.revokeObjectURL(frameUrl);
+    });
+    addEventListener("pageshow", controls);
+  </script>
+</body>
+</html>
