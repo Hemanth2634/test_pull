@@ -1,0 +1,7 @@
+# Install a CPU-specific torch wheel first (see docs/depth-control.md).
+torch==2.9.1
+fastapi==0.141.1
+uvicorn==0.52.1
+numpy==2.3.5
+Pillow==12.3.0
+httpx==0.28.1

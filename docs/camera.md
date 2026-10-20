@@ -1,30 +1,33 @@
 # Phone camera capture
 
-`web/index.html` demonstrates rear-camera preview, JPEG frame capture, and image
-download. Frames stay in the browser; this capture demo does not estimate depth
-or issue movement commands.
+`web/index.html` is the phone depth-review page served by the Python app. Follow
+[the training and server instructions](depth-control.md) to enable estimation.
+It provides rear-camera preview, JPEG capture, region overlays, and explicit
+human confirmation of each distance before requesting a symbolic command.
 
-Serve the `web` directory with a static HTTP server. For a desktop test on the
-same computer, run `python3 -m http.server 8080 --directory web` and open the
-server using the browser's localhost address. On a phone, serve the same files
-through **HTTPS with a certificate trusted by that phone**. Plain HTTP on an
-ESP32 or a laptop's LAN IP does not satisfy browser camera permissions. A phone's
-localhost address refers to the phone, not the laptop.
+On a phone, serve the app through **HTTPS with a certificate trusted by that
+phone**. Plain HTTP on an ESP32 or a laptop's LAN IP does not satisfy browser
+camera permissions. A phone's localhost address refers to the phone, not the
+laptop. A desktop browser on the server can use its own localhost address for
+development without TLS.
 
-Tap **Start camera** and allow camera access, then **Capture frame**. The rear
-camera is preferred, with a fallback to an available camera. Captured frames are
-JPEG blobs with their longest dimension limited to 640 pixels; aspect ratio is
-preserved. **Stop camera** releases the camera tracks.
+Tap **Start rear camera** and allow camera access, then **Capture & estimate**.
+The rear camera is preferred, with a fallback to an available camera. Captured
+frames are JPEG blobs with their longest dimension limited to 640 pixels;
+aspect ratio is preserved. Frames are uploaded to the Python server for
+inference and stored locally there with their review record. **Stop camera**
+releases the camera tracks and discards local pending review.
 
 The reusable `PhoneCamera` class in `web/camera.js` exposes `start()`, `capture()`,
 `stop()`, and `running`. Its video element must be supplied by the caller.
 `capture({ maxDimension: 640, quality: 0.85 })` returns a promise for the JPEG
-`Blob`, which a later inference client can upload as binary image data.
+`Blob`, which the inference client uploads as binary image data. The class can
+also be reused independently of the depth-review app.
 
 Run the automated browser-API tests with Node.js 24:
 
 ```sh
-node --test tests/camera.test.mjs
+node --test tests/*.test.mjs
 ```
 
 These tests use simulated camera APIs. Real camera permission, browser behavior,

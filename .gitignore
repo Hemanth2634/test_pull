@@ -1,2 +1,12 @@
 # Local Wi-Fi settings and credentials (at any depth).
 wifi_config.h
+
+# Local Python tools, trained weights, datasets, and human feedback.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/artifacts/
+/data/
+/runtime/
+/certs/

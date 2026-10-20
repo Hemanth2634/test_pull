@@ -1,0 +1,9 @@
+{
+  "depth_scale_cm": 0.1,
+  "samples": [
+    {"image": "images/scene_001.jpg", "depth": "depth/scene_001.png"},
+    {"image": "images/scene_002.jpg", "depth": "depth/scene_002.png"},
+    {"image": "images/scene_003.jpg", "depth": "depth/scene_003.png"},
+    {"image": "images/scene_004.jpg", "depth": "depth/scene_004.png"}
+  ]
+}

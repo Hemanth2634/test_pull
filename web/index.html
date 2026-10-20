@@ -3,75 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phone camera capture</title>
+  <title>Phone depth review</title>
   <style>
-    body { max-width: 720px; margin: 24px auto; padding: 0 16px; font: 16px/1.5 system-ui, sans-serif; }
-    video, img { display: block; width: 100%; max-height: 60vh; object-fit: contain; background: #111; margin: 12px 0; }
-    button, a { margin-right: 8px; }
-    button { padding: 10px 16px; }
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; line-height: 1.5; background: #11151c; color: #edf2f7; }
+    body { max-width: 760px; margin: 24px auto; padding: 0 16px 40px; }
+    h1 { margin-bottom: 8px; font-size: 1.65rem; }
+    h2 { margin-top: 0; font-size: 1.1rem; }
+    p { margin-top: 8px; }
+    .card { background: #1d2633; padding: 16px; border-radius: 12px; margin: 16px 0; }
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+    button, input { font: inherit; border-radius: 8px; padding: 11px 14px; }
+    button { border: 0; background: #91bbff; color: #10203a; cursor: pointer; }
+    button.secondary { background: #35475f; color: #edf2f7; }
+    button:disabled { opacity: .45; cursor: default; }
+    input { box-sizing: border-box; width: 100%; border: 1px solid #8392a6; color: inherit; background: #11151c; margin: 8px 0 12px; }
+    video, canvas { display: block; width: 100%; max-height: 60vh; object-fit: contain; background: #080a0e; border-radius: 8px; margin: 12px 0; }
+    .muted { color: #becbdd; font-size: .9rem; }
+    #status { min-height: 3em; }
+    #estimate { font-size: 1.7rem; font-weight: 700; }
     [hidden] { display: none; }
   </style>
 </head>
-<body>
-  <h1>Phone camera capture</h1>
-  <p>Start the rear camera, then capture a JPEG frame. Camera access requires a trusted HTTPS connection on your phone.</p>
-  <button id="start" type="button">Start camera</button>
-  <button id="capture" type="button" disabled>Capture frame</button>
-  <button id="stop" type="button" disabled>Stop camera</button>
-  <p id="status" role="status" aria-live="polite">Camera is stopped.</p>
-  <video id="video" autoplay muted playsinline aria-label="Camera preview"></video>
-  <img id="frame" alt="Latest captured camera frame" hidden>
-  <a id="download" download="phone-frame.jpg" hidden>Download JPEG</a>
-  <script type="module">
-    import { PhoneCamera } from "./camera.js";
-
-    const element = id => document.getElementById(id);
-    const camera = new PhoneCamera(element("video"));
-    let frameUrl;
-    function controls() {
-      element("start").disabled = camera.running;
-      element("capture").disabled = !camera.running;
-      element("stop").disabled = !camera.running;
-    }
-    element("start").addEventListener("click", async () => {
-      element("start").disabled = true;
-      element("status").textContent = "Waiting for camera permission…";
-      try {
-        await camera.start();
-        element("status").textContent = "Camera is running. Capture a frame when ready.";
-      } catch (error) {
-        element("status").textContent = error.message;
-      } finally {
-        controls();
-      }
-    });
-    element("capture").addEventListener("click", async () => {
-      element("capture").disabled = true;
-      try {
-        const blob = await camera.capture();
-        if (frameUrl) URL.revokeObjectURL(frameUrl);
-        frameUrl = URL.createObjectURL(blob);
-        element("frame").src = frameUrl;
-        element("frame").hidden = false;
-        element("download").href = frameUrl;
-        element("download").hidden = false;
-        element("status").textContent = `Captured ${blob.type}, ${blob.size} bytes.`;
-      } catch (error) {
-        element("status").textContent = error.message;
-      } finally {
-        controls();
-      }
-    });
-    element("stop").addEventListener("click", () => {
-      camera.stop();
-      controls();
-      element("status").textContent = "Camera is stopped.";
-    });
-    addEventListener("pagehide", () => {
-      camera.stop();
-      if (frameUrl) URL.revokeObjectURL(frameUrl);
-    });
-    addEventListener("pageshow", controls);
-  </script>
+<body id="depth-app">
+  <h1>Phone camera depth review</h1>
+  <p>Capture a frame, review its closest depth region, then confirm or correct the distance.</p>
+  <div class="card">
+    <p id="model-status" role="status">Checking the trained model…</p>
+    <p id="delivery-status" class="muted">Checking command delivery…</p>
+    <p class="muted">Threshold: <strong id="threshold">50 cm</strong>. Below → MOVE_BACK; above → ROTATE; equal → MOVE_SIDE.</p>
+    <p class="muted">Depth regions are candidate obstacles, not semantic object labels. Camera permission requires a trusted HTTPS connection on your phone.</p>
+  </div>
+  <div class="controls">
+    <button id="start" type="button">Start rear camera</button>
+    <button id="capture" type="button" disabled>Capture &amp; estimate</button>
+    <button id="stop" class="secondary" type="button" disabled>Stop camera</button>
+  </div>
+  <p id="status" role="status" aria-live="polite"></p>
+  <video id="video" autoplay muted playsinline aria-label="Live camera preview"></video>
+  <canvas id="frame" aria-label="Captured frame with estimated depth regions; closest region is green" hidden></canvas>
+  <section id="review" class="card" hidden>
+    <h2>Review the closest region</h2>
+    <p id="estimate"></p>
+    <label for="correction">Measured distance in centimetres (optional)</label>
+    <input id="correction" type="number" inputmode="decimal" min="0.001" step="any" placeholder="Leave blank to confirm the estimate" disabled>
+    <p class="muted">Displayed estimates are rounded. Leave the field blank to use the full estimate, or enter 50 to confirm exactly 50 cm.</p>
+    <p id="expiry" class="muted"></p>
+    <div class="controls">
+      <button id="confirm" type="button" disabled>Confirm distance &amp; issue one command</button>
+      <button id="discard" class="secondary" type="button" disabled>Discard frame</button>
+    </div>
+  </section>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

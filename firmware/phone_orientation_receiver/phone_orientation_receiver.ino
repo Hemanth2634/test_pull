@@ -12,6 +12,7 @@
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include "command_protocol.h"
 
 // Keep local Wi-Fi credentials out of version control.
 #include "wifi_config.h"
@@ -31,6 +32,10 @@ uint32_t packetCount = 0;
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
+
+// HTTP handlers and loop() run on different tasks. Only queue operations are locked.
+orientation_commands::SignalQueue commandQueue;
+portMUX_TYPE commandMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ---------- Web page ----------
 const char PAGE[] PROGMEM = R"rawliteral(
@@ -193,6 +198,43 @@ void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
 }
 
 // ---------- Setup / loop ----------
+void handleCommand(AsyncWebServerRequest* req) {
+  // Query parameters only: the Python service sends no request body.
+  if (!req->hasParam("id", false) || !req->hasParam("command", false)) {
+    req->send(400, "application/json", "{\"error\":\"id and command query parameters required\"}");
+    return;
+  }
+  const String id = req->getParam("id", false)->value();
+  const String command = req->getParam("command", false)->value();
+  // Reject embedded NUL data as well as malformed lengths before C-string parsing.
+  if (id.length() != orientation_commands::kIdLength ||
+      command.length() != std::strlen(command.c_str())) {
+    req->send(400, "application/json", "{\"error\":\"invalid id or command\"}");
+    return;
+  }
+
+  portENTER_CRITICAL(&commandMux);
+  const auto result = commandQueue.submit(id.c_str(), command.c_str());
+  portEXIT_CRITICAL(&commandMux);
+
+  using orientation_commands::SubmitResult;
+  if (result == SubmitResult::Invalid) {
+    req->send(400, "application/json", "{\"error\":\"invalid id or command\"}");
+  } else if (result == SubmitResult::Conflict) {
+    req->send(409, "application/json", "{\"error\":\"id already accepted with a different command\"}");
+  } else if (result == SubmitResult::QueueFull) {
+    req->send(503, "application/json", "{\"error\":\"command queue full; retry the same id\"}");
+  } else {
+    // Both new requests and exact retries acknowledge the original queued signal.
+    // Input validation limits both strings to safe JSON characters.
+    char response[96];
+    snprintf(response, sizeof(response),
+             "{\"id\":\"%s\",\"command\":\"%s\",\"accepted\":true}",
+             id.c_str(), command.c_str());
+    req->send(200, "application/json", response);
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(200);
@@ -200,7 +242,7 @@ void setup() {
 #if USE_AP
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS);
-  Serial.printf("\nAP started: %s  (password: %s)\n", AP_SSID, AP_PASS);
+  Serial.printf("\nAP started: %s\n", AP_SSID);
   Serial.printf("Open http://%s on the phone\n", WiFi.softAPIP().toString().c_str());
 #else
   WiFi.mode(WIFI_STA);
@@ -216,12 +258,29 @@ void setup() {
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
     req->send(200, "text/html", PAGE);
   });
+  server.on("/health", HTTP_GET, [](AsyncWebServerRequest* req) {
+    req->send(200, "application/json",
+              "{\"service\":\"phone_orientation_receiver\",\"status\":\"ok\"}");
+  });
+  server.on("/command", HTTP_POST, handleCommand);
 
   server.begin();
 }
 
 void loop() {
   static uint32_t lastPrint = 0, lastCleanup = 0, lastCount = 0;
+
+  // Symbolic signals only: no motor actions or operating-system signals.
+  // Bound each pass so incoming HTTP commands cannot starve orientation handling.
+  for (size_t i = 0; i < orientation_commands::kQueueCapacity; ++i) {
+    orientation_commands::Signal signal;
+    portENTER_CRITICAL(&commandMux);
+    const bool pending = commandQueue.pop(signal);
+    portEXIT_CRITICAL(&commandMux);
+    if (!pending) break;
+    Serial.printf("COMMAND id=%s command=%s\n", signal.id,
+                  orientation_commands::commandName(signal.command));
+  }
 
   // Print at 5 Hz so Serial doesn't choke
   if (millis() - lastPrint >= 200) {
