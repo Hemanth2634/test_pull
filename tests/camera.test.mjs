@@ -3,8 +3,13 @@ import { test } from "node:test";
 import { PhoneCamera } from "../web/camera.js";
 
 function fixture(overrides = {}) {
-  const tracks = [{ stops: 0, stop() { this.stops += 1; } }];
-  const stream = { getTracks: () => tracks };
+  const tracks = [{
+    kind: "video", readyState: "live", stops: 0, handlers: new Map(),
+    addEventListener(event, callback) { this.handlers.set(event, callback); },
+    removeEventListener(event, callback) { if (this.handlers.get(event) === callback) this.handlers.delete(event); },
+    stop() { this.stops += 1; this.readyState = "ended"; },
+  }];
+  const stream = { getTracks: () => tracks, getVideoTracks: () => tracks };
   const requests = [];
   const drawings = [];
   const encodings = [];
@@ -134,6 +139,41 @@ test("a playback failure releases the acquired camera", async () => {
   assert.equal(tracks[0].stops, 1);
   assert.equal(video.srcObject, null);
   assert.equal(camera.running, false);
+});
+
+test("an externally ended camera clears the video and rejects frozen-frame capture", async () => {
+  let camera, tracks, video;
+  const endedStates = [];
+  ({ camera, tracks, video } = fixture({
+    onEnded: () => endedStates.push({ running: camera.running, stream: video.srcObject }),
+  }));
+  await camera.start();
+  const ended = tracks[0].handlers.get("ended");
+  tracks[0].readyState = "ended";
+  ended();
+  assert.equal(camera.running, false);
+  assert.equal(video.srcObject, null);
+  assert.equal(tracks[0].handlers.has("ended"), false);
+  assert.deepEqual(endedStates, [{ running: false, stream: null }]);
+  await assert.rejects(camera.capture(), /Start the camera/);
+});
+
+test("explicit stop does not report an external camera interruption", async () => {
+  let interruptions = 0;
+  const { camera, tracks } = fixture({ onEnded: () => { interruptions += 1; } });
+  await camera.start();
+  camera.stop();
+  assert.equal(interruptions, 0);
+  assert.equal(tracks[0].handlers.has("ended"), false);
+});
+
+test("capture checks live video tracks even before an ended event is delivered", async () => {
+  const { camera, tracks } = fixture();
+  await camera.start();
+  tracks[0].readyState = "ended";
+  assert.equal(camera.running, false);
+  await assert.rejects(camera.capture(), /Start the camera/);
+  camera.stop();
 });
 
 test("stopping during the permission prompt releases a late camera stream", async () => {

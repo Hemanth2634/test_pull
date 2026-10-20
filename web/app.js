@@ -160,21 +160,21 @@ export class DepthWorkflow {
     }
   }
 
-  async discard() {
+  async discard({ message } = {}) {
     const prediction = this.pending;
     const wasConfirming = this.phase === "confirming";
     const generation = ++this.generation;
     this.pending = null;
     this.phase = "idle";
     this.message = wasConfirming
-      ? "Camera stopped. A confirmation already submitted may still be delivered."
-      : "Prediction discarded. No command was requested.";
+      ? `${message || "Camera stopped."} A confirmation already submitted may still be delivered.`
+      : message || "Prediction discarded. No command was requested.";
     this.changed();
     if (!prediction) return;
     try { await this.api.cancel(prediction.id); }
     catch {
       if (generation === this.generation) {
-        this.message = "Prediction discarded locally. Server cancellation was not confirmed; it will expire without a command unless separately confirmed.";
+        this.message = `${message ? `${message} ` : ""}Prediction discarded locally. Server cancellation was not confirmed; it will expire without a command unless separately confirmed.`;
         this.changed();
       }
     }
@@ -194,16 +194,17 @@ export class DepthWorkflow {
 
 export function mountApp(document, {
   api = createApi(),
-  makeCamera = video => new PhoneCamera(video),
+  makeCamera = (video, options) => new PhoneCamera(video, options),
   makeImage = () => new Image(),
   objectURL = globalThis.URL,
 } = {}) {
   const element = id => document.getElementById(id);
-  const camera = makeCamera(element("video"));
+  const camera = makeCamera(element("video"), { onEnded: handleCameraEnded });
   let frameUrl;
   let image;
   let capturing = false;
   let starting = false;
+  let startGeneration = 0;
   let captureGeneration = 0;
   let modelReady = false;
   const workflow = new DepthWorkflow(api, { onChange: render });
@@ -245,16 +246,24 @@ export function mountApp(document, {
   }
 
   element("start").addEventListener("click", async () => {
+    const generation = ++startGeneration;
     starting = true;
     workflow.message = "Waiting for camera permission…";
     render();
     try {
       await camera.start();
+      if (generation !== startGeneration) return;
       workflow.message = modelReady
         ? "Camera is running. Capture a frame to estimate depth."
         : "Camera is running. A trained model is required before depth estimation can work.";
-    } catch (error) { workflow.message = error.message; }
-    finally { starting = false; render(); }
+    } catch (error) {
+      if (generation === startGeneration) workflow.message = error.message;
+    } finally {
+      if (generation === startGeneration) {
+        starting = false;
+        render();
+      }
+    }
   });
 
   element("capture").addEventListener("click", async () => {
@@ -295,13 +304,20 @@ export function mountApp(document, {
   });
   element("discard").addEventListener("click", () => { workflow.discard(); });
 
-  function stop() {
+  function invalidateCamera(message) {
+    startGeneration += 1;
     captureGeneration += 1;
     capturing = false;
     camera.stop();
     starting = false;
-    workflow.discard();
+    workflow.discard({ message });
     render();
+  }
+  function stop() {
+    invalidateCamera("Camera stopped. Start the camera and capture a fresh frame when ready.");
+  }
+  function handleCameraEnded() {
+    invalidateCamera("Camera stream ended. Start the camera and capture a fresh frame.");
   }
   element("stop").addEventListener("click", stop);
   const timer = setInterval(() => { workflow.expire(); render(); }, 1000);

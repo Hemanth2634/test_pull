@@ -269,6 +269,7 @@ void setup() {
 
 void loop() {
   static uint32_t lastPrint = 0, lastCleanup = 0, lastCount = 0;
+  static bool timedOut = false;
 
   // Symbolic signals only: no motor actions or operating-system signals.
   // Bound each pass so incoming HTTP commands cannot starve orientation handling.
@@ -294,6 +295,7 @@ void loop() {
     portEXIT_CRITICAL(&sensorMux);
 
     if (fresh) {
+      timedOut = false;
       Serial.printf("#%lu  a=%7.1f  b=%7.1f  g=%7.1f  |  acc=%6.2f %6.2f %6.2f  |  %lu pkt/s\n",
                     (unsigned long)d.seq, d.alpha, d.beta, d.gamma,
                     d.ax, d.ay, d.az, (unsigned long)(count - lastCount) * 5);
@@ -302,9 +304,9 @@ void loop() {
       // ---- Use the data here, e.g. drive a servo from tilt ----
       // int angle = constrain(map((int)d.gamma, -90, 90, 0, 180), 0, 180);
       // myServo.write(angle);
-    } else if (sensor.receivedAt && millis() - sensor.receivedAt > 2000) {
+    } else if (d.receivedAt && millis() - d.receivedAt > 2000 && !timedOut) {
+      timedOut = true;
       Serial.println("No data for 2 s (phone screen off or disconnected?)");
-      sensor.receivedAt = 0;
     }
   }
 

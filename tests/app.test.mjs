@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ApiError, correctionPayload, createApi, commandDescription, DepthWorkflow } from "../web/app.js";
+import { ApiError, correctionPayload, createApi, commandDescription, DepthWorkflow, mountApp } from "../web/app.js";
 
 function prediction(overrides = {}) {
   const near = { box: [10, 20, 50, 60], distance_cm: 42.125, source: "depth_region" };
@@ -184,4 +184,157 @@ test("API errors preserve status and do not silently retry", async () => {
   });
   await assert.rejects(api.confirm("frame-1", {}), error => error.status === 410 && /expired/.test(error.message));
   assert.equal(requests, 1);
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((grant, fail) => { resolve = grant; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+function mountedFixture(apiOverrides = {}) {
+  const nodes = new Map();
+  const document = {
+    getElementById(id) {
+      if (!nodes.has(id)) {
+        const listeners = new Map();
+        nodes.set(id, {
+          disabled: false, hidden: false, textContent: "", value: "",
+          addEventListener(type, listener) { listeners.set(type, listener); },
+          click() { if (!this.disabled) return listeners.get("click")?.(); },
+        });
+      }
+      return nodes.get(id);
+    },
+  };
+  const requests = fixture();
+  const api = {
+    ...requests.api,
+    async health() { return { model_ready: true }; },
+    async config() { return { threshold_cm: 50, delivery_enabled: false }; },
+    async predict(blob) {
+      requests.calls.predict.push(blob);
+      return prediction({ expires_at: Date.now() / 1000 + 120 });
+    },
+    ...apiOverrides,
+  };
+  let onEnded;
+  const starts = [];
+  const camera = {
+    running: false, version: 0,
+    async start() {
+      const version = ++this.version;
+      const request = deferred();
+      starts.push(request);
+      await request.promise;
+      if (version !== this.version) {
+        const error = new Error("Old permission request was cancelled.");
+        error.name = "AbortError";
+        throw error;
+      }
+      this.running = true;
+    },
+    stop() { this.version += 1; this.running = false; },
+    ended() { this.running = false; onEnded(); },
+    async capture() { return new Blob(["frame"], { type: "image/jpeg" }); },
+  };
+  const app = mountApp(document, {
+    api,
+    makeCamera(video, options) { onEnded = options.onEnded; return camera; },
+  });
+  return { app, camera, starts, calls: requests.calls, node: id => document.getElementById(id) };
+}
+
+test("late permission A cannot clear start B controls or status after stop/restart", async () => {
+  const { app, starts, node } = mountedFixture();
+  try {
+    const startA = node("start").click();
+    node("stop").click();
+    const startB = node("start").click();
+    assert.equal(starts.length, 2);
+    starts[0].resolve();
+    await startA;
+    assert.equal(node("start").disabled, true);
+    assert.equal(node("stop").disabled, false);
+    assert.equal(node("status").textContent, "Waiting for camera permission…");
+    starts[1].resolve();
+    await startB;
+    assert.equal(node("start").disabled, true);
+    assert.equal(node("stop").disabled, false);
+    assert.equal(node("capture").disabled, false);
+    assert.match(node("status").textContent, /Camera is running/);
+  } finally { app.dispose(); }
+});
+
+test("stopping while permission is pending preserves stopped status after late grant", async () => {
+  const { app, camera, starts, node } = mountedFixture();
+  try {
+    const starting = node("start").click();
+    node("stop").click();
+    const stoppedStatus = node("status").textContent;
+    starts[0].resolve();
+    await starting;
+    assert.equal(camera.running, false);
+    assert.equal(node("status").textContent, stoppedStatus);
+    assert.match(stoppedStatus, /Camera stopped/);
+    assert.equal(node("start").disabled, false);
+    assert.equal(node("stop").disabled, true);
+  } finally { app.dispose(); }
+});
+
+test("externally ended camera discards review and disables confirmation without sending", async () => {
+  const { app, camera, calls, node } = mountedFixture();
+  try {
+    camera.running = true;
+    await app.workflow.analyze(new Blob());
+    assert.equal(node("confirm").disabled, false);
+    camera.ended();
+    assert.equal(app.workflow.pending, null);
+    assert.equal(node("confirm").disabled, true);
+    assert.equal(node("capture").disabled, true);
+    assert.equal(node("start").disabled, false);
+    assert.match(node("status").textContent, /Camera stream ended/);
+    assert.deepEqual(calls.cancel, ["frame-1"]);
+    assert.equal(calls.confirm.length, 0);
+  } finally { app.dispose(); }
+});
+
+test("externally ended camera invalidates capture still waiting for its frame", async () => {
+  const { app, camera, calls, node } = mountedFixture();
+  const frame = deferred();
+  try {
+    camera.running = true;
+    camera.capture = () => frame.promise;
+    // Render current live-camera controls without requiring a permission prompt.
+    app.workflow.changed();
+    const capturing = node("capture").click();
+    camera.ended();
+    frame.resolve(new Blob(["late frame"], { type: "image/jpeg" }));
+    await capturing;
+    assert.equal(calls.predict.length, 0);
+    assert.equal(calls.confirm.length, 0);
+    assert.match(node("status").textContent, /Camera stream ended/);
+    assert.equal(node("capture").disabled, true);
+  } finally { app.dispose(); }
+});
+
+test("camera end preserves the delivery warning for an already-submitted confirmation", async () => {
+  const submission = deferred();
+  let confirmations = 0;
+  const { app, camera, node } = mountedFixture({
+    confirm() { confirmations += 1; return submission.promise; },
+  });
+  try {
+    camera.running = true;
+    await app.workflow.analyze(new Blob());
+    const confirming = node("confirm").click();
+    camera.ended();
+    assert.match(node("status").textContent, /Camera stream ended/);
+    assert.match(node("status").textContent, /confirmation already submitted may still be delivered/);
+    submission.resolve({ command: "MOVE_BACK", distance_cm: 42, delivered: true, delivery_error: null });
+    await confirming;
+    assert.equal(confirmations, 1);
+    assert.match(node("status").textContent, /confirmation already submitted may still be delivered/);
+    assert.equal(node("confirm").disabled, true);
+  } finally { app.dispose(); }
 });

@@ -18,6 +18,12 @@ aspect ratio is preserved. Frames are uploaded to the Python server for
 inference and stored locally there with their review record. **Stop camera**
 releases the camera tracks and discards local pending review.
 
+If the browser or operating system ends the camera stream, the page also
+discards pending review and disables capture and confirmation. Start the camera
+again and capture a fresh frame. A late permission response from an earlier,
+cancelled start cannot restart capture or change the controls for a newer start.
+A confirmation already submitted can still be delivered after the camera stops.
+
 The reusable `PhoneCamera` class in `web/camera.js` exposes `start()`, `capture()`,
 `stop()`, and `running`. Its video element must be supplied by the caller.
 `capture({ maxDimension: 640, quality: 0.85 })` returns a promise for the JPEG

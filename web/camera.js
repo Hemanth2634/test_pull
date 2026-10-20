@@ -4,6 +4,7 @@ export class PhoneCamera {
     mediaDevices = globalThis.navigator?.mediaDevices,
     secureContext = globalThis.isSecureContext === true,
     createCanvas = () => document.createElement("canvas"),
+    onEnded = () => {},
   } = {}) {
     if (!video || typeof video.play !== "function") {
       throw new TypeError("A video element is required.");
@@ -12,13 +13,15 @@ export class PhoneCamera {
     this.mediaDevices = mediaDevices;
     this.secureContext = secureContext;
     this.createCanvas = createCanvas;
+    this.onEnded = onEnded;
     this._stream = null;
     this._running = false;
     this._requestId = 0;
+    this._endedListeners = new Map();
   }
 
   get running() {
-    return this._running;
+    return this._running && Boolean(this._stream?.getVideoTracks().some(track => track.readyState === "live"));
   }
 
   async start({ facingMode = "environment" } = {}) {
@@ -42,6 +45,15 @@ export class PhoneCamera {
         throw cancelled;
       }
       this._stream = stream;
+      for (const track of stream.getVideoTracks()) {
+        const ended = () => {
+          if (this._stream !== stream) return;
+          this.stop();
+          this.onEnded();
+        };
+        this._endedListeners.set(track, ended);
+        track.addEventListener("ended", ended);
+      }
       this.video.playsInline = true;
       this.video.muted = true;
       this.video.srcObject = stream;
@@ -50,6 +62,9 @@ export class PhoneCamera {
         const cancelled = new Error("Camera start was cancelled.");
         cancelled.name = "AbortError";
         throw cancelled;
+      }
+      if (!stream.getVideoTracks().some(track => track.readyState === "live")) {
+        throw new Error("The camera stream ended. Start the camera again.");
       }
       this._running = true;
     } catch (error) {
@@ -92,7 +107,12 @@ export class PhoneCamera {
   }
 
   _release(stream) {
-    for (const track of stream.getTracks()) track.stop();
+    for (const track of stream.getTracks()) {
+      const ended = this._endedListeners.get(track);
+      if (ended) track.removeEventListener("ended", ended);
+      this._endedListeners.delete(track);
+      track.stop();
+    }
     if (this._stream === stream) {
       this._stream = null;
       this._running = false;
